@@ -13,6 +13,10 @@ class Settings:
     # Model
     llm_model: str = os.getenv("LLM_MODEL", "gpt-4.1-mini")
     embedding_model: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+    fixed_search_model: str = os.getenv("FIXED_SEARCH_MODEL", "gpt-4o-mini")
+
+    # API Key
+    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
 
     prompt_path = Path("prompts/system_prompt.txt")
     
