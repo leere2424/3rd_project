@@ -1,16 +1,26 @@
-import os
 import json
 from typing import Dict
 
 from openai import OpenAI
 from langchain.tools import tool
 
+from .config import SETTINGS
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-if not OPENAI_API_KEY:
-    raise ValueError("OPENAI_API_KEY 환경변수가 설정되어 있지 않습니다.")
+# llm_tool 내부 기본 모델(기존 동작 유지)
+DEFAULT_FIXED_SEARCH_MODEL = SETTINGS.fixed_search_model
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+# 모듈 단위에서 OpenAI 클라이언트를 1회만 재사용한다.
+_client: OpenAI | None = None
+
+
+def _get_client() -> OpenAI:
+    global _client
+    if _client is None:
+        # .env 로드 및 환경값 조회는 config 모듈에서 처리한다.
+        if not SETTINGS.openai_api_key:
+            raise ValueError("OPENAI_API_KEY 환경변수가 설정되어 있지 않습니다.")
+        _client = OpenAI(api_key=SETTINGS.openai_api_key)
+    return _client
 
 prompt = """너는 사용자의 검색 문장을 분석하는 분류기다.
 반드시 JSON 객체만 반환해.
@@ -24,14 +34,14 @@ prompt = """너는 사용자의 검색 문장을 분석하는 분류기다.
 5) 확실하지 않으면 추측하지 말고 해당 필드는 빈 문자열로 둔다.
 6) 설명, 마크다운, 코드블록 없이 JSON만 출력한다."""
 
-def _make_fixed_search_json(instr: str, model: str = "gpt-4o-mini") -> str:
+def _make_fixed_search_json(instr: str, model: str = DEFAULT_FIXED_SEARCH_MODEL) -> str:
     """
     1단계:
     사용자 입력을 분석해서
     {"restaurant": "...", "menu": "...", "user": "..."}
     형태의 JSON string만 반환받는다.
     """
-    completion = client.chat.completions.create(
+    completion = _get_client().chat.completions.create(
         model=model,
         messages=[
             {
@@ -110,17 +120,24 @@ def _parse_fixed_search_json(raw_json: str) -> Dict[str, str]:
 @tool("fixed_search")
 def fixed_search(instr: str) -> Dict[str, str]:
     """
-    사용자 검색 문장에서 식당 검색어와 리뷰어 검색어를 분리해 반환한다.
+    Tool 역할:
+    사용자 검색 문장을 restaurant/menu/user 3개 슬롯으로 분류해 반환한다.
+
+    처리 단계:
+    1) `_make_fixed_search_json`에서 LLM으로 구조화 JSON 생성
+    2) `_parse_fixed_search_json`에서 타입/형식 검증 및 정규화
+    3) 최종 dict 반환
 
     Args:
         instr: 사용자의 원본 검색 문장
 
     Returns:
-        {"restaurant": "...", "user": "..."}
+        {"restaurant": "...", "menu": "...", "user": "..."}
     """
     instr = (instr or "").strip()
     if not instr:
-        return {"restaurant": "", "user": ""}
+        # 빈 입력은 LLM 호출 없이 즉시 빈 슬롯 구조를 반환한다.
+        return {"restaurant": "", "menu": "", "user": ""}
 
     raw_json = _make_fixed_search_json(instr)
     parsed = _parse_fixed_search_json(raw_json)
