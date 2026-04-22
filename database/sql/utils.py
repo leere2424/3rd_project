@@ -210,7 +210,7 @@ def _compress_list(ls:list) -> list:
     return buff
 
 fixed_search_keys = ["restaurant", "menu", "user"]
-def fixed_search(indict:dict):
+def fixed_search(indict: dict, db_path: str = DB_PATH):
     if not all(k in indict for k in fixed_search_keys):
         return []
     
@@ -219,8 +219,18 @@ def fixed_search(indict:dict):
         table_name = k if k != "user" else k + "s"
         if indict[k] == "":
             continue
-        codes = query_sender(f"SELECT {k}_code FROM {table_name} WHERE name LIKE '%{indict[k]}%'")[k + "_code"].tolist()
+        
+        query = f"SELECT {k}_code FROM {table_name} WHERE name LIKE ?"
+        conn = sqlite3.connect(db_path)
+        try:
+            codes = pd.read_sql(query, conn, params=(f"%{indict[k]}%", ))[k + "_code"].tolist()
+        except Exception:
+            codes = []
+        finally:
+            conn.close()
+        
         buff.extend(search_table(table_name, codes))
+        
     buff = _compress_list(buff)
 
     return get_detailed_restaurants(buff)
