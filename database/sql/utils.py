@@ -153,3 +153,58 @@ def get_detailed_restaurants(code_list: Union[str, list]) -> list:
             "reviews": processed_reviews
         })
     return results
+
+def search_table(table_name: str, codes: list[str]) -> list[str]:
+    if len(codes) == 0:
+        return []
+
+    match table_name:
+        case "category":
+            return search_table("rel_restaurant_category", codes)
+        case "rel_restaurant_category":
+            return _table_jump("rel_restaurant_category", "category_code", "restaurant_code", codes)
+        case "food":
+            return search_table("menu", codes)
+        case "menu":
+            return _table_jump("menu", "menu_code", "restaurant_code", codes) if codes[0][:3] == "MEN" else _table_jump("menu", "food_code", "restaurant_code", codes)
+        case "tag":
+            buff = []
+            for t in codes:
+                buff.extend(search_table("rel_restaurant_tag", [t, ]))
+                buff.extend(search_table("rel_review_tag", [t, ]))
+            return  _compress_list(buff)
+        case "rel_restaurant_tag":
+            return _table_jump("rel_restaurant_tag", "tag_code", "restaurant_code", codes)
+        case "rel_review_tag":
+            qlist = _table_jump("rel_review_tag", "tag_code", "review_code", codes)
+            return search_table("review", qlist)
+        case "users":
+            return search_table("review", codes)
+        case "review":
+            return _table_jump("review", "review_code", "restaurant_code", codes) if codes[0][:3] == "REV" else _table_jump("review", "user_code", "restaurant_code", codes)
+        case "restaurant":
+            return codes
+        case _:
+            raise Exception("no such table exception")
+
+def _table_jump(table_name:str, base_column:str, target_column:str, ls:list[str]) -> list[str]:
+    q = _table_jump_query(table_name, base_column, target_column, ls)
+    res = query_sender(q)[target_column].tolist()
+    return _compress_list(list(res))
+
+# table_name에서 base_column 값이 ls인 튜플의 target_column 값을 ls 순서에 맞게 뽑아주는 쿼리
+def _table_jump_query(table_name:str, base_column:str, target_column:str, ls:list[str]) -> str:
+    return f"""SELECT {target_column}
+FROM {table_name}
+WHERE {base_column} IN ({", ".join(["'" + l + "'" for l in ls])})
+GROUP BY {base_column}
+ORDER BY MIN(CASE {base_column}
+{"\t\n".join(["WHEN '" + ls[i] + f"' THEN {i + 1}" for i in range(len(ls))])}
+END);"""
+
+def _compress_list(ls:list) -> list:
+    buff = []
+    for line in ls:
+        if line not in buff:
+            buff.append(line)
+    return buff
