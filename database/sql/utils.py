@@ -210,7 +210,7 @@ def _compress_list(ls:list) -> list:
     return buff
 
 fixed_search_keys = ["restaurant", "menu", "user"]
-def fixed_search(indict: dict, db_path: str = DB_PATH):
+def db_fixed_search(indict: dict, db_path: str = DB_PATH):
     if not all(k in indict for k in fixed_search_keys):
         return []
     
@@ -236,7 +236,7 @@ def fixed_search(indict: dict, db_path: str = DB_PATH):
     return get_detailed_restaurants(buff)
 
 embedding_search_keys = ["category", "tag", "menu", "food", "review"]
-def embedding_search(indict:dict):
+def db_embedding_search(indict:dict):
     if not all(k in indict for k in embedding_search_keys):
         return []
     

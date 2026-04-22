@@ -1,7 +1,7 @@
 """질의응답 파이프라인(LangGraph) + CLI 진입점.
 
-- `run_qa(question, connector_response, session_id)` : 외부 호출용 API
-- `python -m src.pipeline`                          : 터미널에서 대화 테스트
+- `run_qa(question, session_id)` : 외부 호출용 API
+- `python -m src.pipeline`       : 터미널에서 대화 테스트
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from typing import Any, Literal, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from .generator import generate_response
-from .mock_data import restaurant_list as MOCK_RESTAURANT_LIST
+from database.sql.utils import db_fixed_search, db_embedding_search
 from .router import decide_route
 from .slot_extractor import embedding_slot_extract, fixed_search
 
@@ -19,49 +19,41 @@ class GraphState(TypedDict, total=False):
     question: str
     session_id: str
 
-    # ============================================================
-    # [커넥터 반환 데이터가 들어오는 자리]
-    # pipeline.main() 또는 외부 호출부에서 아래 형태로 넘겨준다고 가정
-    #
-    # {
-    #     "restaurant_list": [...],
-    #     "search_mode": "...",
-    #     "candidate_count": ...
-    # }
-    # ============================================================
-    connector_response: dict[str, Any]
-
     route: Literal["embedding", "fixed"]
     route_payload: dict[str, str]
 
+    # utils(db connector) 반환값: list[dict]
     restaurant_list: list[dict[str, Any]]
+
     answer: str
 
 
 _graph = None
 
 
-def _normalize_connector_response(result: Any) -> dict[str, Any]:
+def _normalize_restaurant_list(result: Any) -> list[dict[str, Any]]:
+    """
+    utils 함수 반환값을 restaurant_list 형태로 정규화한다.
+
+    허용:
+    1) list[dict]
+    2) {"restaurant_list": list[dict]}  # 혹시 utils 쪽이 나중에 이렇게 바뀌어도 방어
+    """
     if result is None:
-        return {"restaurant_list": []}
+        return []
+
+    if isinstance(result, list):
+        return result
 
     if isinstance(result, dict):
         restaurant_list = result.get("restaurant_list", [])
         if restaurant_list is None:
-            restaurant_list = []
-
+            return []
         if not isinstance(restaurant_list, list):
             raise ValueError("connector_response['restaurant_list']는 list 형태여야 합니다.")
+        return restaurant_list
 
-        return {
-            **result,
-            "restaurant_list": restaurant_list,
-        }
-
-    if isinstance(result, list):
-        return {"restaurant_list": result}
-
-    raise ValueError("connector_response는 dict 또는 list 형태여야 합니다.")
+    raise ValueError("connector/utils 반환값은 list 또는 {'restaurant_list': list} 형태여야 합니다.")
 
 
 def route_node(state: GraphState) -> GraphState:
@@ -78,23 +70,19 @@ def fixed_slot_node(state: GraphState) -> GraphState:
     return {"route_payload": payload}
 
 
-def connector_prepare_node(state: GraphState) -> GraphState:
-    # ============================================================
-    # [커넥터 반환 데이터 받아오는 곳]
-    # 외부(main 등)에서 전달받은 connector_response를 여기서 정규화함
-    # ============================================================
-    connector_response = _normalize_connector_response(state.get("connector_response"))
+def connector_search_node(state: GraphState) -> GraphState:
+    route = state["route"]
+    route_payload = state.get("route_payload", {})
 
-    # ============================================================
-    # [커넥터 데이터에서 restaurant_list 추출하는 곳]
-    # 이후 generate_response에 들어갈 핵심 데이터
-    # ============================================================
-    restaurant_list = connector_response.get("restaurant_list", [])
+    if route == "embedding":
+        raw_result = db_embedding_search(route_payload)
+    elif route == "fixed":
+        raw_result = db_fixed_search(route_payload)
+    else:
+        raise ValueError(f"알 수 없는 route입니다: {route}")
 
-    return {
-        "connector_response": connector_response,
-        "restaurant_list": restaurant_list,
-    }
+    restaurant_list = _normalize_restaurant_list(raw_result)
+    return {"restaurant_list": restaurant_list}
 
 
 def generate_node(state: GraphState) -> GraphState:
@@ -103,14 +91,10 @@ def generate_node(state: GraphState) -> GraphState:
     route = state.get("route", "embedding")
     route_payload = state.get("route_payload", {})
     restaurant_list = state.get("restaurant_list", [])
-    connector_response = state.get("connector_response", {})
 
     connector_meta = {
-        k: v
-        for k, v in connector_response.items()
-        if k != "restaurant_list"
+        "restaurant_count": len(restaurant_list)
     }
-    connector_meta["restaurant_count"] = len(restaurant_list)
 
     answer = generate_response(
         question=question,
@@ -133,7 +117,7 @@ def build_graph():
     graph.add_node("route_node", route_node)
     graph.add_node("embedding_slot_node", embedding_slot_node)
     graph.add_node("fixed_slot_node", fixed_slot_node)
-    graph.add_node("connector_prepare_node", connector_prepare_node)
+    graph.add_node("connector_search_node", connector_search_node)
     graph.add_node("generate_node", generate_node)
 
     graph.add_edge(START, "route_node")
@@ -147,10 +131,10 @@ def build_graph():
         },
     )
 
-    graph.add_edge("embedding_slot_node", "connector_prepare_node")
-    graph.add_edge("fixed_slot_node", "connector_prepare_node")
+    graph.add_edge("embedding_slot_node", "connector_search_node")
+    graph.add_edge("fixed_slot_node", "connector_search_node")
 
-    graph.add_edge("connector_prepare_node", "generate_node")
+    graph.add_edge("connector_search_node", "generate_node")
     graph.add_edge("generate_node", END)
 
     return graph.compile()
@@ -165,20 +149,14 @@ def get_graph():
 
 def run_qa(
     question: str,
-    connector_response: dict[str, Any] | list[dict[str, Any]],
     session_id: str = "default",
 ) -> dict[str, Any]:
     graph = get_graph()
 
-    # ============================================================
-    # [외부에서 커넥터 반환 데이터를 주입하는 곳]
-    # main()이 connector_response를 넘겨주면 여기서 그래프에 넣음
-    # ============================================================
     result = graph.invoke(
         {
             "question": question,
             "session_id": session_id,
-            "connector_response": connector_response,
         }
     )
 
@@ -186,7 +164,6 @@ def run_qa(
         "question": question,
         "route": result.get("route"),
         "route_payload": result.get("route_payload", {}),
-        "connector_response": result.get("connector_response", {}),
         "restaurant_list": result.get("restaurant_list", []),
         "answer": result.get("answer", ""),
     }
@@ -195,7 +172,8 @@ def run_qa(
 def main() -> None:
     """CLI 대화형 테스트 진입점.
 
-    빈 Enter로 종료. 커넥터 자리에는 `mock_data.restaurant_list` 를 주입.
+    빈 Enter로 종료.
+    route와 route_payload를 바탕으로 utils(db_fixed_search / db_embedding_search)를 직접 호출한다.
     """
     print("=" * 60)
     print("맛집 추천 CLI 테스트 (빈 Enter 입력시 종료)")
@@ -212,20 +190,11 @@ def main() -> None:
             print("종료합니다.")
             break
 
-        connector_response = {
-            "restaurant_list": MOCK_RESTAURANT_LIST,
-            "search_mode": "embedding",
-            "candidate_count": len(MOCK_RESTAURANT_LIST),
-        }
-
         result = run_qa(
             question=question,
-            connector_response=connector_response,
             session_id="default",
         )
 
-        # print(f"\n[route]   {result.get('route')}")
-        # print(f"[payload] {result.get('route_payload')}")
         print("\n[답변]")
         print(result["answer"])
 
