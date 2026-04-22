@@ -16,6 +16,9 @@ search_height = 100
 selectbox_height = 50
 left_sidebar, map_field = st.columns([3.5, 6.5])
 
+start_lat = 37.4997
+start_lng = 126.9281
+
 ######################################################################
 # session_state 초기화
 ######################################################################
@@ -50,8 +53,8 @@ lat = "lat"
 lng = "lng"
 if lat not in st.session_state:
     # 초기 위치는 신대방 삼거리역 위치
-    st.session_state[lat] = 37.4997
-    st.session_state[lng] = 126.9281
+    st.session_state[lat] = start_lat
+    st.session_state[lng] = start_lng
 
 ######################################################################
 # 함수 선언
@@ -67,8 +70,12 @@ def update_search_result(rlist:list[dict]):
 
     # 지도 위치 갱신
     coord_cnt = len(rlist)
-    st.session_state[lat] = sum([c[0] for c in st.session_state[search_coordinates]]) / coord_cnt
-    st.session_state[lng] = sum([c[1] for c in st.session_state[search_coordinates]]) / coord_cnt
+    if coord_cnt == 0:
+        st.session_state[lat] = start_lat
+        st.session_state[lng] = start_lng
+    else:
+        st.session_state[lat] = sum([c[0] for c in st.session_state[search_coordinates]]) / coord_cnt
+        st.session_state[lng] = sum([c[1] for c in st.session_state[search_coordinates]]) / coord_cnt
 
     # 지도 갱신
     st.rerun()
