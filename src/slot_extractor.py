@@ -293,9 +293,28 @@ def embedding_slot_extract(instr: str) -> Dict[str, str]:
             "review": "",
         }
 
-    # 1) LLM 으로 JSON 문자열 받기 → 2) 파싱/검증해서 dict 로 반환.
+    # # 1) LLM 으로 JSON 문자열 받기 → 2) 파싱/검증해서 dict 로 반환.
+    # raw_json = _make_embedding_slot_json(instr)
+    # return _parse_slot_json(raw_json)
+
+    # ⭐⭐⭐⭐
     raw_json = _make_embedding_slot_json(instr)
-    return _parse_slot_json(raw_json)
+
+    # ===================== 🔥 추가 (여기) =====================
+    print("\n[DEBUG] ===== RAW SLOT JSON (LLM OUTPUT) =====")
+    print(raw_json)
+    # ========================================================
+
+    # 2) 파싱/검증해서 dict 로 변환
+    parsed = _parse_slot_json(raw_json)
+
+    # ===================== 🔥 추가 (여기) =====================
+    import json
+    print("\n[DEBUG] ===== PARSED SLOT (DICT) =====")
+    print(json.dumps(parsed, ensure_ascii=False, indent=2))
+    # ========================================================
+
+    return parsed
 
 
 # ---------------------------------------------------------------------------
